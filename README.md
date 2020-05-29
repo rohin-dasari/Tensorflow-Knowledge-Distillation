@@ -54,7 +54,7 @@ The student network is a network of an identical architecture. First, the teache
 
 The results are shown below:
 
-![Learning Curves](/https://github.com/rohin-dasari/Tensorflow-Knowledge-Distillation/blob/master/LearningCurve.PNG)
+![Learning Curves](./LearningCurve.PNG)
 
 
 
