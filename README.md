@@ -56,6 +56,8 @@ The results are shown below:
 
 ![Learning Curves](./LearningCurve.PNG)
 
+Here we see that the student model, which is trained on soft targets, is much less prone to overfitting, compared to the teacher model
+
 
 
 
