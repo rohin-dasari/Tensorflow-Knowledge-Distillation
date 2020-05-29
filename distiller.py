@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras import datasets, layers, models
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 
 def trainModel(model, train_ds, test_ds, epochs=5):
@@ -86,7 +87,7 @@ class Distiller:
     Train a teacher network with the specified temperature.
     Store the soft targets for the training set
     '''
-    def trainTeacher(self, epochs=5):
+    def trainTeacher(self):
         print('training teacher network...')
         # self.teacher = trainModel(self.teacher, self.train_ds, self.test_ds, epochs=epochs)
         self.history['teacher']['train_accuracy'] = []
@@ -106,7 +107,7 @@ class Distiller:
 
 
         # train the model
-        for epoch in range(epochs):
+        for epoch in range(self.epochs):
             # Reset the metrics at the start of the next epoch
             train_loss.reset_states()
             train_accuracy.reset_states()
@@ -135,7 +136,7 @@ class Distiller:
             self.history['teacher']['train_loss'].append(train_loss.result())
             self.history['teacher']['train_accuracy'].append(train_accuracy.result())
             self.history['teacher']['test_loss'].append(test_loss.result())
-            self.history['teacher']['train_accuracy'].append(test_accuracy.result())
+            self.history['teacher']['test_accuracy'].append(test_accuracy.result())
 
             print(f'Epoch {epoch + 1}, Train Loss: {train_loss.result()}, Train Accuracy: {train_accuracy.result()*100}, Test Loss: {test_loss.result()}, Test Accuracy: {test_accuracy.result()*100}')
 
@@ -146,14 +147,14 @@ class Distiller:
     on a transfer set
     '''
     def getTeacherTargets(self):
-        print('fetching soft targets set by teacher network...')
+        print('\nfetching soft targets set by teacher network...')
         # for the training set, get the soft targets set by the teacher network
         teacher_targets = []
         
-        for sample in self.x_transfer:
+        for sample in tqdm(self.x_transfer):
             teacher_targets.append(tf.nn.softmax(self.teacher.predict(np.expand_dims(sample, axis=0)/self.temp)))
             
-        return tf.data.Dataset.from_tensor_slices((self.x_transfer, teacher_targets)).batch(32)      
+        self.transfer_ds_soft = tf.data.Dataset.from_tensor_slices((self.x_transfer, teacher_targets)).batch(32)      
         
     
     
@@ -162,8 +163,8 @@ class Distiller:
     set by the teacher network and the hard targets
     from the dataset
     '''
-    def teachStudent(self, transfer_ds_soft, epochs=5):
-        print('training student model to match soft targets set by teacher and hard targets from dataset...')
+    def teachStudent(self):
+        print('\ntraining student model to match soft targets set by teacher and hard targets from dataset...')
         loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         optimizer=tf.keras.optimizers.Adam()
 
@@ -172,16 +173,21 @@ class Distiller:
 
         test_loss = tf.keras.metrics.Mean(name='test_loss')
         test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='test_accuracy')
+
+        self.history['student']['train_accuracy'] = []
+        self.history['student']['train_loss'] = []
+        self.history['student']['test_accuracy'] = []
+        self.history['student']['test_loss'] = []
         
         
         print('training the student network...')
-        for epoch in range(epochs):
+        for epoch in range(self.epochs):
             train_loss.reset_states()
             train_accuracy.reset_states()
             test_loss.reset_states()
             test_accuracy.reset_states()
         
-            for (x_train, y_train_hard), (_, y_train_soft) in zip(self.transfer_ds, transfer_ds_soft):
+            for (x_train, y_train_hard), (_, y_train_soft) in zip(self.transfer_ds, self.transfer_ds_soft):
                 
                 with tf.GradientTape() as tape:
                     predictions = self.student(x_train, training=True)
@@ -210,26 +216,15 @@ class Distiller:
             self.history['student']['train_loss'].append(train_loss.result())
             self.history['student']['train_accuracy'].append(train_accuracy.result())
             self.history['student']['test_loss'].append(test_loss.result())
-            self.history['student']['train_accuracy'].append(test_accuracy.result())
+            self.history['student']['test_accuracy'].append(test_accuracy.result())
 
             print(f'Epoch {epoch + 1}, Train Loss: {train_loss.result()}, Train Accuracy: {train_accuracy.result()*100}, Test Loss: {test_loss.result()}, Test Accuracy: {test_accuracy.result()*100}')
             
-    
-    '''
-    Train a model with the same architecture as the
-    student network only on hard targets from
-    the dataset
-    '''
-    def trainBase(self, epochs=5):
-        print('training student model without soft targets from teacher...')
-        
-        self.student_base = trainModel(self.student_base, self.transfer_ds, self.test_ds, epochs=epochs)
-        
 
-    
     def run(self):
         self.trainTeacher() 
-        self.teachStudent(self.getTeacherTargets()) 
+        self.getTeacherTargets()
+        self.teachStudent() 
         self.history['models']['teacher'] = self.teacher
         self.history['models']['student'] = self.student
 
@@ -272,9 +267,42 @@ def studentModel():
 
 if __name__ == '__main__':
     
-    pass
-    # teacher = teacherModel()
+    # a small demo
 
-    # dis = Distiller(teacher, tf.keras.models.clone_model(teacher), x_train, y_train, x_test, y_test, temp=4, task_balance=0.8)
+    tf.keras.backend.clear_session()
+    
+    
+    mnist = tf.keras.datasets.mnist
+
+    (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    x_train, x_test = x_train / 255.0, x_test / 255.0
+    x_train = x_train[:10000, :, :]
+    y_train = y_train[:10000]
+    x_test = x_test[:3000, :, :]
+    y_test = y_test[:3000]
+
+    x_train = x_train[..., tf.newaxis]
+    x_test = x_test[..., tf.newaxis]
+
+    EPOCHS = 10
+    teacher = teacherModel()
+
+    dis = Distiller(teacher, tf.keras.models.clone_model(teacher), x_train, y_train, x_test, y_test, temp=4, epochs=EPOCHS, task_balance=0.8)
+
+    history = dis.run()
+
+    fig, ax = plt.subplots()
+    ax.plot(np.arange(EPOCHS), history['student']['train_accuracy'], linewidth=2, label='student training accuracy', color='darkorange', linestyle='--')
+    ax.plot(np.arange(EPOCHS), history['student']['test_accuracy'], linewidth=2, label='student test accuracy', color='darkorange')
+    ax.plot(np.arange(EPOCHS), history['teacher']['train_accuracy'], linewidth=2, label='teacher training accuracy', color='navy', linestyle='--')
+    ax.plot(np.arange(EPOCHS), history['teacher']['test_accuracy'], linewidth=2, label='teacher test accuracy', color='navy')
+
+    ax.legend(loc='best')
+
+    ax.set_xlabel('epochs')
+    ax.set_ylabel('accuracy')
+    ax.set_title('Learning Curves')
+    plt.show()
+    
 
 
